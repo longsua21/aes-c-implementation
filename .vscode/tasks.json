@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build & Run AES",
+      "type": "shell",
+      "command": "gcc -std=c99 -Wall -O2 aes_encrypt.c -o aes_encrypt.exe; if ($?) { .\\aes_encrypt.exe }",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ]
+}
