@@ -504,6 +504,7 @@ int main(void)
     printf("  |  Ma hoa  : %10.4f us  (%10.6f ms)          |\n", enc_us, enc_us/1000.0);
     printf("  |  Giai ma : %10.4f us  (%10.6f ms)          |\n", dec_us, dec_us/1000.0);
     printf("  +------------------------------------------------------+\n\n");
+    
     printf("  Nhan Enter de thoat chuong trinh...\n");
     // Dùng vòng lặp để xóa bộ nhớ đệm (phòng trường hợp phím Enter bị kẹt lại từ bước nhập Key)
     int c;
