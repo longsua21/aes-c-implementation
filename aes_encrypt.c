@@ -90,8 +90,8 @@ static const uint8_t RCON[15] = {
    ================================================================ */
 typedef struct {
     int      Nk;             /* key words: 4/6/8             */
-    int      Nr;             /* rounds:   10/12/14            */
-    int      key_bits;       /* 128/192/256                   */
+    int      Nr;             /* rounds:   10/12/14           */
+    int      key_bits;       /* 128/192/256                  */
     uint8_t  round_key[240]; /* max needed: 15 * 16 = 240     */
 } AES_CTX;
 
@@ -323,7 +323,7 @@ int main(void)
 
     printf("\n");
     printf("  ======================================================\n");
-    printf("  ||   AES-128 / 192 / 256 ENCRYPTION DEMO - C99     ||\n");
+    printf("  ||   AES-128 / 192 / 256 ENCRYPTION DEMO - C99      ||\n");
     printf("  ||       Khong dung thu vien ngoai                  ||\n");
     printf("  ======================================================\n");
 
@@ -394,34 +394,48 @@ int main(void)
        ---------------------------------------------------------- */
     char key_str[130] = {0};
     uint8_t key[32]   = {0};
+    int valid_key = 0; // Cờ kiểm tra tính hợp lệ của khóa
 
-    printf("\n  Nhap khoa AES-%d (%d ky tu hex).\n", key_bits, key_hex_len);
-    printf("  Nhan Enter de dung khoa mac dinh (NIST test vector).\n  > ");
-    fflush(stdout);
-    if (!fgets(key_str, sizeof(key_str), stdin)) {
-        printf("  Loi nhap!\n"); return 1;
-    }
-    int ks_len = (int)strlen(key_str);
-    if (ks_len > 0 && key_str[ks_len-1] == '\n') { key_str[--ks_len] = '\0'; }
+    while (!valid_key) {
+        printf("\n  Nhap khoa AES-%d (%d ky tu hex).\n", key_bits, key_hex_len);
+        printf("  Nhan Enter de dung khoa mac dinh (NIST test vector).\n  > ");
+        fflush(stdout);
+        
+        if (!fgets(key_str, sizeof(key_str), stdin)) {
+            printf("  Loi nhap!\n"); return 1;
+        }
+        
+        int ks_len = (int)strlen(key_str);
+        if (ks_len > 0 && key_str[ks_len-1] == '\n') { key_str[--ks_len] = '\0'; }
 
-    if (ks_len == 0) {
-        const uint8_t *dk = (key_bits==128) ? DEFAULT_KEY128
-                          : (key_bits==192) ? DEFAULT_KEY192
-                                            : DEFAULT_KEY256;
-        memcpy(key, dk, key_bytes);
-        printf("  -> Dung khoa mac dinh AES-%d.\n", key_bits);
-    } else if (ks_len != key_hex_len) {
-        printf("\n  [LOI] Khoa AES-%d phai co dung %d ky tu hex! (ban nhap %d)\n\n",
-               key_bits, key_hex_len, ks_len);
-        return 1;
-    } else {
-        for (int i = 0; i < key_bytes; i++) {
-            unsigned int bv = 0;
-            if (sscanf(key_str + i*2, "%02x", &bv) != 1) {
-                printf("\n  [LOI] Khoa chua ky tu hex khong hop le!\n\n");
-                return 1;
+        if (ks_len == 0) {
+            const uint8_t *dk = (key_bits==128) ? DEFAULT_KEY128
+                              : (key_bits==192) ? DEFAULT_KEY192
+                                                : DEFAULT_KEY256;
+            memcpy(key, dk, key_bytes);
+            printf("  -> Dung khoa mac dinh AES-%d.\n", key_bits);
+            valid_key = 1; // Hợp lệ, thoát vòng lặp
+            
+        } else if (ks_len != key_hex_len) {
+            printf("\n  [LOI] Khoa AES-%d phai co dung %d ky tu hex! (ban nhap %d). Vui long nhap lai.\n",
+                   key_bits, key_hex_len, ks_len);
+                   
+        } else {
+            int parse_error = 0;
+            for (int i = 0; i < key_bytes; i++) {
+                unsigned int bv = 0;
+                if (sscanf(key_str + i*2, "%02x", &bv) != 1) {
+                    parse_error = 1;
+                    break;
+                }
+                key[i] = (uint8_t)bv;
             }
-            key[i] = (uint8_t)bv;
+            
+            if (parse_error) {
+                printf("\n  [LOI] Khoa chua ky tu hex khong hop le! Vui long nhap lai.\n");
+            } else {
+                valid_key = 1; // Hợp lệ, thoát vòng lặp
+            }
         }
     }
 
