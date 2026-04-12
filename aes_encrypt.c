@@ -7,6 +7,17 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+
+/* ================================================================
+   Cross-platform UTF-8 terminal setup
+   ================================================================ */
+static void setup_utf8(void) {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+}
 
 /* ----------------------------------------------------------------
    Cross-platform high-resolution timer
@@ -75,7 +86,6 @@ static const uint8_t RSBOX[256] = {
     0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d
 };
 
-/* RCON[1..14] — AES-256 key expansion can need up to index 7 but we store 15 */
 static const uint8_t RCON[15] = {
     0x00,
     0x01,0x02,0x04,0x08,0x10,0x20,0x40,
@@ -84,30 +94,24 @@ static const uint8_t RCON[15] = {
 
 /* ================================================================
    AES CONTEXT
-   AES-128: Nk=4, Nr=10, round_key = 11*16 = 176 bytes
-   AES-192: Nk=6, Nr=12, round_key = 13*16 = 208 bytes
-   AES-256: Nk=8, Nr=14, round_key = 15*16 = 240 bytes
    ================================================================ */
 typedef struct {
-    int      Nk;             /* key words: 4/6/8             */
-    int      Nr;             /* rounds:   10/12/14           */
-    int      key_bits;       /* 128/192/256                  */
-    uint8_t  round_key[240]; /* max needed: 15 * 16 = 240     */
+    int      Nk;
+    int      Nr;
+    int      key_bits;
+    uint8_t  round_key[240];
 } AES_CTX;
 
 /* ================================================================
-   KEY EXPANSION  (generic for Nk = 4, 6, 8)
+   KEY EXPANSION
    ================================================================ */
 static void KeyExpansion(AES_CTX *ctx, const uint8_t *key)
 {
     int Nk   = ctx->Nk;
     int Nr   = ctx->Nr;
-    int total_words = (Nr + 1) * 4;  /* each round key = 4 words */
-
-    /* W[i] stored as 4 consecutive bytes in round_key */
+    int total_words = (Nr + 1) * 4;
     uint8_t *W = ctx->round_key;
 
-    /* Copy original key as first Nk words */
     memcpy(W, key, Nk * 4);
 
     for (int i = Nk; i < total_words; i++) {
@@ -115,22 +119,17 @@ static void KeyExpansion(AES_CTX *ctx, const uint8_t *key)
         memcpy(temp, W + (i - 1) * 4, 4);
 
         if (i % Nk == 0) {
-            /* RotWord */
             uint8_t t = temp[0];
             temp[0] = temp[1]; temp[1] = temp[2];
             temp[2] = temp[3]; temp[3] = t;
-            /* SubWord */
             temp[0] = SBOX[temp[0]]; temp[1] = SBOX[temp[1]];
             temp[2] = SBOX[temp[2]]; temp[3] = SBOX[temp[3]];
-            /* XOR Rcon */
             temp[0] ^= RCON[i / Nk];
         } else if (Nk > 6 && i % Nk == 4) {
-            /* Extra SubWord step only for AES-256 */
             temp[0] = SBOX[temp[0]]; temp[1] = SBOX[temp[1]];
             temp[2] = SBOX[temp[2]]; temp[3] = SBOX[temp[3]];
         }
 
-        /* W[i] = W[i-Nk] XOR temp */
         W[i*4+0] = W[(i-Nk)*4+0] ^ temp[0];
         W[i*4+1] = W[(i-Nk)*4+1] ^ temp[1];
         W[i*4+2] = W[(i-Nk)*4+2] ^ temp[2];
@@ -214,7 +213,7 @@ static void InvMixColumns(uint8_t state[4][4]) {
 }
 
 /* ================================================================
-   AES ENCRYPT / DECRYPT  (single 16-byte block, generic Nr)
+   AES ENCRYPT / DECRYPT  (single 16-byte block)
    ================================================================ */
 static void AES_EncryptBlock(AES_CTX *ctx, const uint8_t in[16], uint8_t out[16])
 {
@@ -224,14 +223,12 @@ static void AES_EncryptBlock(AES_CTX *ctx, const uint8_t in[16], uint8_t out[16]
             state[r][c] = in[c*4+r];
 
     AddRoundKey(ctx, state, 0);
-
     for (int round = 1; round <= ctx->Nr - 1; round++) {
         SubBytes(state);
         ShiftRows(state);
         MixColumns(state);
         AddRoundKey(ctx, state, round);
     }
-
     SubBytes(state);
     ShiftRows(state);
     AddRoundKey(ctx, state, ctx->Nr);
@@ -249,14 +246,12 @@ static void AES_DecryptBlock(AES_CTX *ctx, const uint8_t in[16], uint8_t out[16]
             state[r][c] = in[c*4+r];
 
     AddRoundKey(ctx, state, ctx->Nr);
-
     for (int round = ctx->Nr - 1; round >= 1; round--) {
         InvShiftRows(state);
         InvSubBytes(state);
         AddRoundKey(ctx, state, round);
         InvMixColumns(state);
     }
-
     InvShiftRows(state);
     InvSubBytes(state);
     AddRoundKey(ctx, state, 0);
@@ -269,10 +264,11 @@ static void AES_DecryptBlock(AES_CTX *ctx, const uint8_t in[16], uint8_t out[16]
 /* ================================================================
    PKCS#7 PADDING
    ================================================================ */
-static int pkcs7_pad(const uint8_t *in, int len, uint8_t *out)
+static int pkcs7_pad(const uint8_t *in, int len, uint8_t *out, int out_max)
 {
     int pad_len = 16 - (len % 16);
-    memcpy(out, in, len);
+    if (len + pad_len > out_max) return -1;
+    memcpy(out, in, (size_t)len);
     for (int i = 0; i < pad_len; i++)
         out[len + i] = (uint8_t)pad_len;
     return len + pad_len;
@@ -284,6 +280,16 @@ static int pkcs7_unpad(const uint8_t *buf, int len)
     int pad = buf[len - 1];
     if (pad < 1 || pad > 16) return len;
     return len - pad;
+}
+
+/* ================================================================
+   UTF-8 helper: byte length of a UTF-8 string (works on raw bytes)
+   AES hoat dong tren byte nen khong can giai ma Unicode —
+   chi can biet so BYTE thuc su (khong tinh \n, \0).
+   ================================================================ */
+static int utf8_byte_len(const char *s)
+{
+    return (int)strlen(s);
 }
 
 /* ================================================================
@@ -303,60 +309,55 @@ static void print_title(const char *title) {
 
 static void print_hex(const char *label, const uint8_t *data, int len)
 {
-    printf("  %-24s: ", label);
+    printf("  %-26s: ", label);
     for (int i = 0; i < len; i++) {
         printf("%02X", data[i]);
         if (i + 1 < len) {
-            if ((i + 1) % 16 == 0)       printf("\n  %24s  ", "");
-            else if ((i + 1) % 4 == 0)   printf(" ");
+            if ((i + 1) % 16 == 0)      printf("\n  %28s  ", "");
+            else if ((i + 1) % 4 == 0)  printf(" ");
         }
     }
     printf("\n");
 }
 
 /* ================================================================
-   MAIN
+   FLUSH STDIN
    ================================================================ */
-int main(void)
+static void flush_stdin(void)
 {
-    timer_init();
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) {}
+}
 
-    printf("\n");
-    printf("  ======================================================\n");
-    printf("  ||   AES-128 / 192 / 256 ENCRYPTION DEMO - C99      ||\n");
-    printf("  ||       Khong dung thu vien ngoai                  ||\n");
-    printf("  ======================================================\n");
-
-    /* ----------------------------------------------------------
-       Chon che do AES
-       ---------------------------------------------------------- */
+/* ================================================================
+   CHON CHE DO AES — tra ve 128/192/256, vong lap cho den khi hop le
+   ================================================================ */
+static int choose_key_bits(void)
+{
+    char line[32];
     int key_bits = 0;
-    {
-        char line[32];
-        while (key_bits != 128 && key_bits != 192 && key_bits != 256) {
-            printf("\n  Chon che do AES (128 / 192 / 256): ");
-            fflush(stdout);
-            if (!fgets(line, sizeof(line), stdin)) break;
-            sscanf(line, "%d", &key_bits);
-            if (key_bits != 128 && key_bits != 192 && key_bits != 256)
-                printf("  [LOI] Chi chap nhan 128, 192 hoac 256!\n");
-        }
+    while (1) {
+        printf("\n  Chon che do AES (128 / 192 / 256): ");
+        fflush(stdout);
+        if (!fgets(line, sizeof(line), stdin)) continue;
+        /* neu line qua dai, xa stdin */
+        if (!strchr(line, '\n')) flush_stdin();
+        sscanf(line, "%d", &key_bits);
+        if (key_bits == 128 || key_bits == 192 || key_bits == 256)
+            return key_bits;
+        printf("  [LOI] Chi chap nhan 128, 192 hoac 256! Vui long nhap lai.\n");
+        key_bits = 0;
     }
+}
 
-    /* ----------------------------------------------------------
-       Thiet lap context theo key_bits
-       ---------------------------------------------------------- */
-    AES_CTX ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.key_bits = key_bits;
-    if      (key_bits == 128) { ctx.Nk = 4; ctx.Nr = 10; }
-    else if (key_bits == 192) { ctx.Nk = 6; ctx.Nr = 12; }
-    else                      { ctx.Nk = 8; ctx.Nr = 14; }
+/* ================================================================
+   NHAP KHOA — vong lap cho den khi hop le
+   ================================================================ */
+static int input_key(int key_bits, uint8_t *key)
+{
+    int key_bytes   = key_bits / 8;
+    int key_hex_len = key_bytes * 2;
 
-    int key_bytes    = key_bits / 8;   /* 16 / 24 / 32 */
-    int key_hex_len  = key_bytes * 2;  /* 32 / 48 / 64 */
-
-    /* Default keys (NIST test vectors) */
     static const uint8_t DEFAULT_KEY128[16] = {
         0x2b,0x7e,0x15,0x16,0x28,0xae,0xd2,0xa6,
         0xab,0xf7,0x15,0x88,0x09,0xcf,0x4f,0x3c
@@ -373,120 +374,109 @@ int main(void)
         0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4
     };
 
-    /* ----------------------------------------------------------
-       Nhap plaintext
-       ---------------------------------------------------------- */
-    char plaintext[224] = {0};
-    printf("\n  Nhap plaintext (it nhat 15 ky tu, toi da 223):\n  > ");
-    fflush(stdout);
-    if (!fgets(plaintext, sizeof(plaintext), stdin)) {
-        printf("  Loi nhap!\n"); return 1;
-    }
-    int pt_len = (int)strlen(plaintext);
-    if (pt_len > 0 && plaintext[pt_len-1] == '\n') { plaintext[--pt_len] = '\0'; }
-    if (pt_len < 15) {
-        printf("\n  [LOI] Plaintext phai co it nhat 15 ky tu! (ban nhap %d)\n\n", pt_len);
-        return 1;
-    }
-
-    /* ----------------------------------------------------------
-       Nhap khoa
-       ---------------------------------------------------------- */
     char key_str[130] = {0};
-    uint8_t key[32]   = {0};
-    int valid_key = 0; // Cờ kiểm tra tính hợp lệ của khóa
 
-    while (!valid_key) {
+    while (1) {
         printf("\n  Nhap khoa AES-%d (%d ky tu hex).\n", key_bits, key_hex_len);
         printf("  Nhan Enter de dung khoa mac dinh (NIST test vector).\n  > ");
         fflush(stdout);
-        
-        if (!fgets(key_str, sizeof(key_str), stdin)) {
-            printf("  Loi nhap!\n"); return 1;
-        }
-        
+
+        if (!fgets(key_str, sizeof(key_str), stdin)) continue;
+        if (!strchr(key_str, '\n')) flush_stdin();
+
         int ks_len = (int)strlen(key_str);
-        if (ks_len > 0 && key_str[ks_len-1] == '\n') { key_str[--ks_len] = '\0'; }
+        if (ks_len > 0 && key_str[ks_len-1] == '\n') key_str[--ks_len] = '\0';
 
         if (ks_len == 0) {
             const uint8_t *dk = (key_bits==128) ? DEFAULT_KEY128
                               : (key_bits==192) ? DEFAULT_KEY192
                                                 : DEFAULT_KEY256;
-            memcpy(key, dk, key_bytes);
+            memcpy(key, dk, (size_t)key_bytes);
             printf("  -> Dung khoa mac dinh AES-%d.\n", key_bits);
-            valid_key = 1; // Hợp lệ, thoát vòng lặp
-            
-        } else if (ks_len != key_hex_len) {
-            printf("\n  [LOI] Khoa AES-%d phai co dung %d ky tu hex! (ban nhap %d). Vui long nhap lai.\n",
-                   key_bits, key_hex_len, ks_len);
-                   
-        } else {
-            int parse_error = 0;
-            for (int i = 0; i < key_bytes; i++) {
-                unsigned int bv = 0;
-                if (sscanf(key_str + i*2, "%02x", &bv) != 1) {
-                    parse_error = 1;
-                    break;
-                }
-                key[i] = (uint8_t)bv;
-            }
-            
-            if (parse_error) {
-                printf("\n  [LOI] Khoa chua ky tu hex khong hop le! Vui long nhap lai.\n");
-            } else {
-                valid_key = 1; // Hợp lệ, thoát vòng lặp
-            }
+            return 1;
         }
+
+        if (ks_len != key_hex_len) {
+            printf("  [LOI] Khoa AES-%d phai co dung %d ky tu hex! (ban nhap %d). Nhap lai.\n",
+                   key_bits, key_hex_len, ks_len);
+            continue;
+        }
+
+        int valid = 1;
+        for (int i = 0; i < key_bytes; i++) {
+            unsigned int bv = 0;
+            if (sscanf(key_str + i*2, "%02x", &bv) != 1) { valid = 0; break; }
+            key[i] = (uint8_t)bv;
+        }
+        if (!valid) {
+            printf("  [LOI] Khoa chua ky tu hex khong hop le! Nhap lai.\n");
+            continue;
+        }
+        return 1;
+    }
+}
+
+/* ================================================================
+   XU LY MOT PHIEN MA HOA
+   - Plaintext co the chua chu co dau (UTF-8, luu tren byte)
+   - Buffer dong: tu dong cap phat theo do dai plaintext
+   ================================================================ */
+static void run_session(AES_CTX *ctx, int key_bits, const uint8_t *key,
+                        const char *plaintext, int pt_len)
+{
+    int key_bytes = key_bits / 8;
+
+    /* Tinh kich thuoc buffer can thiet */
+    int max_buf = pt_len + 16 + 16; /* +16 padding, +16 du phong */
+
+    uint8_t *padded    = (uint8_t *)calloc((size_t)max_buf, 1);
+    uint8_t *ciphertext= (uint8_t *)calloc((size_t)max_buf, 1);
+    uint8_t *decrypted = (uint8_t *)calloc((size_t)max_buf + 1, 1);
+
+    if (!padded || !ciphertext || !decrypted) {
+        printf("  [LOI] Khong du bo nho!\n");
+        free(padded); free(ciphertext); free(decrypted);
+        return;
     }
 
-    pt_len = (int)strlen(plaintext);
-
-    /* ----------------------------------------------------------
-       PKCS#7 padding + key expansion
-       ---------------------------------------------------------- */
-    uint8_t padded[240]     = {0};
-    uint8_t ciphertext[240] = {0};
-    uint8_t decrypted[240]  = {0};
-
-    int padded_len = pkcs7_pad((const uint8_t *)plaintext, pt_len, padded);
+    int padded_len = pkcs7_pad((const uint8_t *)plaintext, pt_len, padded, max_buf);
+    if (padded_len < 0) {
+        printf("  [LOI] Du lieu qua lon!\n");
+        free(padded); free(ciphertext); free(decrypted);
+        return;
+    }
     int num_blocks = padded_len / 16;
 
-    KeyExpansion(&ctx, key);
+    KeyExpansion(ctx, key);
 
-    /* ----------------------------------------------------------
-       In thong tin dau vao
-       ---------------------------------------------------------- */
+    /* ---- In thong tin dau vao ---- */
     print_title("THONG TIN DAU VAO");
-    printf("  %-24s: AES-%d (%d rounds)\n", "Che do",  key_bits, ctx.Nr);
-    printf("  %-24s: %s\n",                 "Plaintext goc", plaintext);
-    printf("  %-24s: %d byte(s)\n",         "Do dai plaintext", pt_len);
-    printf("  %-24s: %d block(s) x 16 byte\n","So block (sau pad)", num_blocks);
+    printf("  %-26s: AES-%d (%d rounds)\n",  "Che do",            key_bits, ctx->Nr);
+    printf("  %-26s: %s\n",                   "Plaintext goc",     plaintext);
+    printf("  %-26s: %d byte(s)\n",           "Do dai (byte)",     pt_len);
+    printf("  %-26s: %d block(s) x 16 byte\n","So block (sau pad)",num_blocks);
     print_hex("Khoa AES (HEX)", key, key_bytes);
-    print_hex("Sau PKCS7 padding",  padded, padded_len);
+    print_hex("Sau PKCS7 padding", padded, padded_len);
 
-    /* ----------------------------------------------------------
-       MA HOA
-       ---------------------------------------------------------- */
+    /* ---- Ma hoa ---- */
     print_title("MA HOA (ENCRYPT)");
 
     TimerVal t0, t1;
     timer_get(&t0);
     for (int i = 0; i < padded_len; i += 16)
-        AES_EncryptBlock(&ctx, padded + i, ciphertext + i);
+        AES_EncryptBlock(ctx, padded + i, ciphertext + i);
     timer_get(&t1);
     double enc_us = timer_us(&t0, &t1);
 
     print_hex("Ciphertext (HEX)", ciphertext, padded_len);
-    printf("  %-24s: %.4f us (%.6f ms)\n", "Thoi gian ma hoa", enc_us, enc_us/1000.0);
+    printf("  %-26s: %.4f us (%.6f ms)\n", "Thoi gian ma hoa", enc_us, enc_us/1000.0);
 
-    /* ----------------------------------------------------------
-       GIAI MA
-       ---------------------------------------------------------- */
+    /* ---- Giai ma ---- */
     print_title("GIAI MA (DECRYPT)");
 
     timer_get(&t0);
     for (int i = 0; i < padded_len; i += 16)
-        AES_DecryptBlock(&ctx, ciphertext + i, decrypted + i);
+        AES_DecryptBlock(ctx, ciphertext + i, decrypted + i);
     timer_get(&t1);
     double dec_us = timer_us(&t0, &t1);
 
@@ -494,12 +484,10 @@ int main(void)
     decrypted[dec_len] = '\0';
 
     print_hex("Sau giai ma (HEX)", decrypted, dec_len);
-    printf("  %-24s: %s\n",     "Plaintext phuc hoi", (char *)decrypted);
-    printf("  %-24s: %.4f us (%.6f ms)\n", "Thoi gian giai ma", dec_us, dec_us/1000.0);
+    printf("  %-26s: %s\n",    "Plaintext phuc hoi", (char *)decrypted);
+    printf("  %-26s: %.4f us (%.6f ms)\n", "Thoi gian giai ma", dec_us, dec_us/1000.0);
 
-    /* ----------------------------------------------------------
-       KET QUA KIEM TRA
-       ---------------------------------------------------------- */
+    /* ---- Ket qua ---- */
     print_title("KET QUA KIEM TRA");
 
     int match = (dec_len == pt_len) &&
@@ -512,18 +500,122 @@ int main(void)
 
     printf("\n");
     printf("  +------------------------------------------------------+\n");
-    printf("  |  TONG KET THOI GIAN  (AES-%d, %d block)             |\n",
-           key_bits, num_blocks);
+    printf("  |  TONG KET THOI GIAN  (AES-%d, %d block)%*s|\n",
+           key_bits, num_blocks,
+           (int)(13 - (key_bits>=192?1:0) - (num_blocks>=10?1:0)), " ");
     printf("  +------------------------------------------------------+\n");
     printf("  |  Ma hoa  : %10.4f us  (%10.6f ms)          |\n", enc_us, enc_us/1000.0);
     printf("  |  Giai ma : %10.4f us  (%10.6f ms)          |\n", dec_us, dec_us/1000.0);
     printf("  +------------------------------------------------------+\n\n");
-    
-    printf("  Nhan Enter de thoat chuong trinh...\n");
-    // Dùng vòng lặp để xóa bộ nhớ đệm (phòng trường hợp phím Enter bị kẹt lại từ bước nhập Key)
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF); 
-    getchar();   
+
+    free(padded);
+    free(ciphertext);
+    free(decrypted);
+}
+
+/* ================================================================
+   MAIN — vong lap chinh, khong can build lai
+   ================================================================ */
+int main(void)
+{
+    setup_utf8();
+    timer_init();
+
+    printf("\n");
+    printf("  ======================================================\n");
+    printf("  ||   AES-128 / 192 / 256 ENCRYPTION DEMO - C99     ||\n");
+    printf("  ||   Ho tro chu co dau (UTF-8) | Nhap lai khi sai  ||\n");
+    printf("  ======================================================\n");
+
+    /* ---- Chon che do AES (chi can chon 1 lan) ---- */
+    int key_bits = choose_key_bits();
+
+    /* ---- Thiet lap context ---- */
+    AES_CTX ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.key_bits = key_bits;
+    if      (key_bits == 128) { ctx.Nk = 4; ctx.Nr = 10; }
+    else if (key_bits == 192) { ctx.Nk = 6; ctx.Nr = 12; }
+    else                      { ctx.Nk = 8; ctx.Nr = 14; }
+
+    /* ---- Nhap khoa (chi can nhap 1 lan, dung cho moi phien) ---- */
+    uint8_t key[32] = {0};
+    input_key(key_bits, key);
+
+    /* ================================================================
+       VONG LAP CHINH: nhap plaintext -> ma hoa/giai ma -> hoi tiep
+       ================================================================ */
+    while (1) {
+        /* --- Nhap plaintext, cho phep nhap lai neu sai --- */
+        /* Bo dem dong: toi da 4096 byte (du cho van ban dai) */
+        #define PT_MAX 4096
+        char *plaintext = (char *)malloc(PT_MAX);
+        if (!plaintext) { printf("  [LOI] Khong du bo nho!\n"); break; }
+
+        int pt_len = 0;
+        while (1) {
+            printf("\n  Nhap plaintext (toi da %d byte, ho tro UTF-8/chu co dau):\n  > ", PT_MAX - 1);
+            fflush(stdout);
+
+            if (!fgets(plaintext, PT_MAX, stdin)) {
+                printf("  Loi nhap!\n");
+                continue;
+            }
+            /* Xu ly truong hop dong qua dai */
+            if (!strchr(plaintext, '\n') && strlen(plaintext) == (size_t)(PT_MAX - 1)) {
+                flush_stdin();
+                printf("  [LOI] Van ban qua dai (toi da %d byte). Nhap lai.\n", PT_MAX - 1);
+                continue;
+            }
+
+            pt_len = (int)strlen(plaintext);
+            if (pt_len > 0 && plaintext[pt_len-1] == '\n') plaintext[--pt_len] = '\0';
+
+            if (pt_len == 0) {
+                printf("  [LOI] Plaintext khong duoc de trong! Nhap lai.\n");
+                continue;
+            }
+
+            /* Kiem tra do dai toi thieu: it nhat 1 ky tu co nghia
+               (1 byte ASCII = 1, 1 ky tu UTF-8 co dau = 2-4 byte)
+               -> cho phep bat ky do dai > 0 */
+            break;
+        }
+
+        utf8_byte_len(plaintext); /* chi goi de tranh canh bao unused */
+
+        /* --- Chay phien ma hoa / giai ma --- */
+        run_session(&ctx, key_bits, key, plaintext, pt_len);
+
+        free(plaintext);
+
+        /* --- Hoi nguoi dung co muon tiep tuc khong --- */
+        char again[8] = {0};
+        printf("  Nhap plaintext moi? (y/n): ");
+        fflush(stdout);
+        if (!fgets(again, sizeof(again), stdin)) break;
+        if (!strchr(again, '\n')) flush_stdin();
+
+        char c = again[0];
+        if (c != 'y' && c != 'Y') {
+            printf("\n  Tam biet!\n\n");
+            break;
+        }
+
+        /* Hoi co doi khoa khong */
+        char change[8] = {0};
+        printf("  Doi khoa moi? (y/n): ");
+        fflush(stdout);
+        if (!fgets(change, sizeof(change), stdin)) break;
+        if (!strchr(change, '\n')) flush_stdin();
+
+        if (change[0] == 'y' || change[0] == 'Y') {
+            memset(key, 0, sizeof(key));
+            input_key(key_bits, key);
+        }
+
+        #undef PT_MAX
+    }
 
     return 0;
 }
